@@ -1,0 +1,202 @@
+name: "SentinelAI Scan"
+description: "Runs the scanners on the runner and uploads a findings + graph-inputs bundle to the SentinelAI backend."
+author: "Sentinel-AI-Sec"
+
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  backend-url:
+    description: "SentinelAI backend base URL, e.g. https://api.sentinelai.example"
+    required: true
+  machine-token:
+    description: "Scoped machine token (scan:write) used to authenticate with the backend."
+    required: true
+  project-id:
+    description: "SentinelAI project id this repository is registered as. Recorded in the bundle metadata."
+    required: false
+    default: ""
+  auth-scheme:
+    description: "Authorization scheme for the machine token. 'Bearer' per the API design; 'ApiKey' if the backend expects that instead."
+    required: false
+    default: "Bearer"
+
+  checkout:
+    description: "Check the repository out. Set to 'false' when the calling workflow already ran actions/checkout."
+    required: false
+    default: "true"
+  scan-dir:
+    description: "Directory to scan, relative to the workspace."
+    required: false
+    default: "."
+  infra-dir:
+    description: "Directory holding the Terraform configuration, relative to scan-dir."
+    required: false
+    default: "infra"
+  bundle-dir:
+    description: "Directory the bundle is assembled in, relative to the workspace."
+    required: false
+    default: "sentinelai-bundle"
+
+  dotnet-project:
+    description: "Path to the .csproj to build for the Roslyn/Security Code Scan pass, e.g. src/OrderApp/OrderApp.csproj. Empty skips the code layer."
+    required: false
+    default: ""
+  lockfile-path:
+    description: "Path to packages.lock.json for OSV-Scanner. Empty auto-discovers the one the .NET restore produced."
+    required: false
+    default: ""
+
+  install-scanners:
+    description: "Install the pinned scanner toolchain. Set to 'false' when the runner image already has it."
+    required: false
+    default: "true"
+
+  upload:
+    description: "Upload the bundle to the backend. Set to 'false' to build the bundle only (dry run)."
+    required: false
+    default: "true"
+  fail-on-upload-error:
+    description: "Fail the job when the upload does not return a 2xx response."
+    required: false
+    default: "true"
+  retain-report:
+    description: "Opt in to report retention on the backend."
+    required: false
+    default: "false"
+  model-tier-hint:
+    description: "Model tier hint passed to the backend: auto | economy | premium."
+    required: false
+    default: "auto"
+  upload-artifact:
+    description: "Also attach the bundle to the workflow run as an artifact, for debugging."
+    required: false
+    default: "false"
+
+  gitleaks-version:
+    description: "Pinned Gitleaks version."
+    required: false
+    default: "8.18.4"
+  checkov-version:
+    description: "Pinned Checkov version."
+    required: false
+    default: "3.2.0"
+  trivy-version:
+    description: "Pinned Trivy version."
+    required: false
+    default: "0.55.0"
+  osv-scanner-version:
+    description: "Pinned OSV-Scanner version."
+    required: false
+    default: "2.3.8"
+  security-code-scan-version:
+    description: "Pinned SecurityCodeScan.VS2019 analyzer version."
+    required: false
+    default: "5.6.7"
+
+outputs:
+  bundle-path:
+    description: "Path to the packaged bundle tarball."
+    value: ${{ steps.package.outputs.bundle-path }}
+  bundle-sha256:
+    description: "SHA-256 of the packaged bundle tarball."
+    value: ${{ steps.package.outputs.bundle-sha256 }}
+  scan-job-id:
+    description: "Scan job id returned by the backend, empty on a dry run."
+    value: ${{ steps.upload.outputs.scan-job-id }}
+  poll-url:
+    description: "Poll URL returned by the backend, empty on a dry run."
+    value: ${{ steps.upload.outputs.poll-url }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout code
+      if: inputs.checkout == 'true'
+      uses: actions/checkout@v4
+
+    - name: Install scanners (pinned)
+      if: inputs.install-scanners == 'true'
+      shell: bash
+      env:
+        GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+        CHECKOV_VERSION: ${{ inputs.checkov-version }}
+        TRIVY_VERSION: ${{ inputs.trivy-version }}
+        OSV_SCANNER_VERSION: ${{ inputs.osv-scanner-version }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/install-scanners.sh"
+
+    - name: Secret pre-scan (Gitleaks)
+      id: prescan
+      shell: bash
+      env:
+        SCAN_DIR: ${{ inputs.scan-dir }}
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/secret-prescan.sh"
+
+    - name: Run scanners
+      shell: bash
+      env:
+        SCAN_DIR: ${{ inputs.scan-dir }}
+        INFRA_DIR: ${{ inputs.infra-dir }}
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+        DOTNET_PROJECT: ${{ inputs.dotnet-project }}
+        LOCKFILE_PATH: ${{ inputs.lockfile-path }}
+        SCS_VERSION: ${{ inputs.security-code-scan-version }}
+        CHECKOV_VERSION: ${{ inputs.checkov-version }}
+        TRIVY_VERSION: ${{ inputs.trivy-version }}
+        OSV_SCANNER_VERSION: ${{ inputs.osv-scanner-version }}
+        GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/run-scanners.sh"
+
+    - name: Collect graph inputs
+      shell: bash
+      env:
+        SCAN_DIR: ${{ inputs.scan-dir }}
+        INFRA_DIR: ${{ inputs.infra-dir }}
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/collect-graph-inputs.sh"
+
+    - name: Build bundle metadata
+      shell: bash
+      env:
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+        PROJECT_ID: ${{ inputs.project-id }}
+        MODEL_TIER_HINT: ${{ inputs.model-tier-hint }}
+        RETAIN_REPORT: ${{ inputs.retain-report }}
+        RUNNER_SECRET_SCAN: ${{ steps.prescan.outputs.status }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/build-metadata.sh"
+
+    - name: Assert no application source in bundle
+      shell: bash
+      env:
+        TARGET: ${{ inputs.bundle-dir }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/assert-no-source.sh"
+
+    - name: Package bundle
+      id: package
+      shell: bash
+      env:
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/package-bundle.sh"
+
+    - name: Upload bundle to SentinelAI
+      id: upload
+      if: inputs.upload == 'true'
+      shell: bash
+      env:
+        BACKEND_URL: ${{ inputs.backend-url }}
+        MACHINE_TOKEN: ${{ inputs.machine-token }}
+        AUTH_SCHEME: ${{ inputs.auth-scheme }}
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+        BUNDLE_PATH: ${{ steps.package.outputs.bundle-path }}
+        FAIL_ON_UPLOAD_ERROR: ${{ inputs.fail-on-upload-error }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/upload-bundle.sh"
+
+    - name: Attach bundle to workflow run
+      if: inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: sentinelai-bundle
+        path: ${{ steps.package.outputs.bundle-path }}
+        retention-days: 7

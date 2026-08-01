@@ -1,0 +1,32 @@
+# Example caller workflow.
+#
+# Drop this into the fixture repo (or any customer repo) as
+# .github/workflows/sentinelai.yml. This is the whole integration surface: one
+# job, one step, two secrets.
+
+name: SentinelAI Scan
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write   # needed later by SEC-41, which posts the PR comment
+
+jobs:
+  sentinelai:
+    name: SentinelAI security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Sentinel-AI-Sec/sentinelai-action@dev
+        with:
+          backend-url: ${{ vars.SENTINELAI_BACKEND_URL }}
+          machine-token: ${{ secrets.SENTINELAI_MACHINE_TOKEN }}
+          project-id: ${{ vars.SENTINELAI_PROJECT_ID }}
+          dotnet-project: src/OrderApp/OrderApp.csproj
+          infra-dir: infra
+
+      # While the backend endpoint (SEC-13) is still being built, comment out
+      # the token above and add `upload: "false"` to build the bundle only —
+      # the run then proves bundle shape without needing a server.

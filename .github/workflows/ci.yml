@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint scripts and action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --external-sources scripts/*.sh test/*.sh
+
+      - name: actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+      - name: action.yml parses
+        run: python3 -c "import yaml,sys; yaml.safe_load(open('action.yml')); print('action.yml OK')"
+
+  bundle-shape:
+    name: Bundle shape against the fixture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the SEC-04 fixture
+        uses: actions/checkout@v4
+        with:
+          repository: Sentinel-AI-Sec/sentinelai-fixtures
+          path: fixture
+
+      # No scanners installed on purpose: this proves the degraded path still
+      # produces a well-formed, source-free bundle.
+      - name: Assemble and assert
+        run: FIXTURE_DIR="$GITHUB_WORKSPACE/fixture" bash test/bundle-shape.test.sh
+
+  action-dry-run:
+    name: Run the action end to end (no upload)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: action
+
+      - name: Check out the SEC-04 fixture
+        uses: actions/checkout@v4
+        with:
+          repository: Sentinel-AI-Sec/sentinelai-fixtures
+          path: fixture
+
+      - name: SentinelAI scan (dry run)
+        id: scan
+        uses: ./action
+        with:
+          backend-url: "https://example.invalid"
+          machine-token: "dry-run"
+          checkout: "false"
+          scan-dir: "fixture"
+          infra-dir: "infra"
+          install-scanners: "false"
+          upload: "false"
+
+      - name: Show what the bundle would have been
+        run: |
+          echo "bundle: ${{ steps.scan.outputs.bundle-path }}"
+          echo "sha256: ${{ steps.scan.outputs.bundle-sha256 }}"
+          tar -tzf "${{ steps.scan.outputs.bundle-path }}"
