@@ -63,6 +63,8 @@ set_output "poll-url" "$poll_url"
 say "scan job ${job_id:-unknown} accepted; poll at ${poll_url:-unknown}"
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  # The backticks below are markdown code formatting, not command substitution.
+  # shellcheck disable=SC2016
   {
     printf '### SentinelAI scan submitted\n\n'
     printf '| | |\n|---|---|\n'

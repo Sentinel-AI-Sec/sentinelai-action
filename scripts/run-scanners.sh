@@ -109,7 +109,8 @@ run_trivy() {
 checkov_run() {
   local label=$1 outfile=$2
   shift 2
-  rm -rf "$TMP/$label"
+  # ${TMP:?} so an unset TMP can never turn this into `rm -rf /...`.
+  rm -rf "${TMP:?}/${label:?}"
   checkov "$@" --output sarif --output-file-path "$TMP/$label" --quiet || true
   # Checkov names the file results_sarif.sarif; older builds used results.sarif.
   local produced=""

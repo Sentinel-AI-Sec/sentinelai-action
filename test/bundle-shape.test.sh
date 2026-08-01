@@ -16,9 +16,36 @@ trap 'rm -rf "$WORK"' EXIT
 
 pass=0
 fail=0
-ok()   { printf '  ok   %s\n' "$1"; pass=$((pass + 1)); }
-no()   { printf '  FAIL %s\n' "$1"; fail=$((fail + 1)); }
-check() { if eval "$2"; then ok "$1"; else no "$1"; fi; }
+ok() { printf '  ok   %s\n' "$1"; pass=$((pass + 1)); }
+no() { printf '  FAIL %s\n' "$1"; fail=$((fail + 1)); }
+
+# check     <label> <command...>  — passes when the command succeeds
+# check_not <label> <command...>  — passes when the command fails
+check() {
+  local label=$1
+  shift
+  if "$@" >/dev/null 2>&1; then ok "$label"; else no "$label"; fi
+}
+check_not() {
+  local label=$1
+  shift
+  if "$@" >/dev/null 2>&1; then no "$label"; else ok "$label"; fi
+}
+
+# Predicates, so every check is a plain command rather than a string to eval.
+found_any()   { [[ -n $(find "$1" -name "$2" -print -quit) ]]; }
+found_count() { [[ $(find "$2" -name "$3" | wc -l) -ge $1 ]]; }
+json_valid()  { python3 -m json.tool "$1"; }
+tarball_has() { tar -tzf "$1" | grep -q "$2"; }
+manifest_non_empty() {
+  local n
+  n=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['artifacts']))" "$1")
+  [[ $n -gt 0 ]]
+}
+field_set() {
+  python3 -c "import json,sys; assert json.load(open(sys.argv[1]))[sys.argv[2]]" "$1" "$2"
+}
+guard() { TARGET=$1 bash "$ROOT/scripts/assert-no-source.sh"; }
 
 if [[ -z "$FIXTURE_DIR" || ! -d "$FIXTURE_DIR" ]]; then
   echo "FIXTURE_DIR must point at a checkout of Sentinel-AI-Sec/sentinelai-fixtures" >&2
@@ -36,14 +63,15 @@ unset GITHUB_OUTPUT GITHUB_STEP_SUMMARY GITHUB_PATH
 mkdir -p "$RUNNER_TEMP"
 
 BUNDLE="$GITHUB_WORKSPACE/sentinelai-bundle"
+GRAPH="$BUNDLE/graph-inputs"
 
 echo "== assembling bundle from $FIXTURE_DIR =="
 SCAN_DIR=. BUNDLE_DIR=sentinelai-bundle \
-  bash "$ROOT/scripts/secret-prescan.sh" >"$WORK/prescan.log" 2>&1 || true
+  bash "$ROOT/scripts/secret-prescan.sh" >"$WORK/prescan.log" 2>&1
 SCAN_DIR=. INFRA_DIR=infra BUNDLE_DIR=sentinelai-bundle DOTNET_PROJECT="" \
-  bash "$ROOT/scripts/run-scanners.sh" >"$WORK/scanners.log" 2>&1 || true
+  bash "$ROOT/scripts/run-scanners.sh" >"$WORK/scanners.log" 2>&1
 SCAN_DIR=. INFRA_DIR=infra BUNDLE_DIR=sentinelai-bundle \
-  bash "$ROOT/scripts/collect-graph-inputs.sh" >"$WORK/graph.log" 2>&1 || true
+  bash "$ROOT/scripts/collect-graph-inputs.sh" >"$WORK/graph.log" 2>&1
 BUNDLE_DIR=sentinelai-bundle PROJECT_ID=test-project RUNNER_SECRET_SCAN=passed \
   bash "$ROOT/scripts/build-metadata.sh" >"$WORK/metadata.log" 2>&1
 
@@ -53,44 +81,44 @@ echo "== bundle layout =="
 echo
 
 echo "== graph inputs (SEC-11 acceptance: the backend can build edges) =="
-check "terraform source collected"      '[[ $(find "$BUNDLE/graph-inputs" -name "*.tf" | wc -l) -ge 5 ]]'
-check "iam.tf collected (role->resource edges)" '[[ -f "$BUNDLE/graph-inputs/infra/iam.tf" ]]'
-check "Dockerfile collected (code->infra join)" '[[ -f "$BUNDLE/graph-inputs/Dockerfile" ]]'
-check "csproj collected (dep->code seam)"       '[[ -f "$BUNDLE/graph-inputs/src/OrderApp/OrderApp.csproj" ]]'
-check "packages.lock.json collected"            '[[ -f "$BUNDLE/graph-inputs/src/OrderApp/packages.lock.json" ]]'
+check "terraform source collected"              found_count 5 "$GRAPH" '*.tf'
+check "iam.tf collected (role->resource edges)" test -f "$GRAPH/infra/iam.tf"
+check "Dockerfile collected (code->infra join)" test -f "$GRAPH/Dockerfile"
+check "csproj collected (dep->code seam)"       test -f "$GRAPH/src/OrderApp/OrderApp.csproj"
+check "packages.lock.json collected"            test -f "$GRAPH/src/OrderApp/packages.lock.json"
 
 echo
 echo "== provenance =="
-check "metadata.json written"           '[[ -f "$BUNDLE/metadata.json" ]]'
-check "scanner-versions.json written"   '[[ -f "$BUNDLE/scanner-versions.json" ]]'
+check "metadata.json written"         test -f "$BUNDLE/metadata.json"
+check "scanner-versions.json written" test -f "$BUNDLE/scanner-versions.json"
 # Windows ships a python3 shim that resolves but does not run, so test the
 # interpreter rather than the name.
 if python3 -c 'pass' >/dev/null 2>&1; then
-  check "metadata.json is valid JSON"   'python3 -m json.tool "$BUNDLE/metadata.json" >/dev/null'
-  check "scanner-versions is valid JSON" 'python3 -m json.tool "$BUNDLE/scanner-versions.json" >/dev/null'
-  check "artifact manifest is non-empty" '[[ $(python3 -c "import json;print(len(json.load(open(\"$BUNDLE/metadata.json\"))[\"artifacts\"]))") -gt 0 ]]'
-  check "commit_sha recorded"            'python3 -c "import json;assert json.load(open(\"$BUNDLE/metadata.json\"))[\"commit_sha\"]"'
+  check "metadata.json is valid JSON"     json_valid "$BUNDLE/metadata.json"
+  check "scanner-versions is valid JSON"  json_valid "$BUNDLE/scanner-versions.json"
+  check "artifact manifest is non-empty"  manifest_non_empty "$BUNDLE/metadata.json"
+  check "commit_sha recorded"             field_set "$BUNDLE/metadata.json" commit_sha
 else
   echo "  skip python3 not available — JSON validity unchecked"
 fi
 
 echo
 echo "== the core promise: no application source leaves the runner =="
-check "no .cs in the bundle directory"  '! find "$BUNDLE" -name "*.cs" | grep -q .'
-check "no compiled app output either"   '! find "$BUNDLE" -name "*.dll" | grep -q .'
-check "source guard passes on the dir"  'TARGET=sentinelai-bundle bash "$ROOT/scripts/assert-no-source.sh" >/dev/null 2>&1'
+check_not "no .cs in the bundle directory" found_any "$BUNDLE" '*.cs'
+check_not "no compiled app output either"  found_any "$BUNDLE" '*.dll'
+check     "source guard passes on the dir" guard sentinelai-bundle
 
 # The guard is only worth having if it actually trips. Plant a .cs file and
 # require a refusal — a guard that never fails is indistinguishable from none.
-cp "$GITHUB_WORKSPACE/src/OrderApp/Program.cs" "$BUNDLE/graph-inputs/Program.cs"
-check "source guard REFUSES a planted .cs" '! TARGET=sentinelai-bundle bash "$ROOT/scripts/assert-no-source.sh" >/dev/null 2>&1'
-rm -f "$BUNDLE/graph-inputs/Program.cs"
+cp "$GITHUB_WORKSPACE/src/OrderApp/Program.cs" "$GRAPH/Program.cs"
+check_not "source guard REFUSES a planted .cs" guard sentinelai-bundle
+rm -f "$GRAPH/Program.cs"
 
 echo
 echo "== packaging =="
-check "bundle packages"                 'BUNDLE_DIR=sentinelai-bundle bash "$ROOT/scripts/package-bundle.sh" >/dev/null 2>&1'
-check "tarball exists"                  '[[ -f "$BUNDLE.tar.gz" ]]'
-check "no .cs inside the tarball"       '! tar -tzf "$BUNDLE.tar.gz" | grep -q "\.cs$"'
+check "bundle packages"           env BUNDLE_DIR=sentinelai-bundle bash "$ROOT/scripts/package-bundle.sh"
+check "tarball exists"            test -f "$BUNDLE.tar.gz"
+check_not "no .cs inside the tarball" tarball_has "$BUNDLE.tar.gz" '\.cs$'
 
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"

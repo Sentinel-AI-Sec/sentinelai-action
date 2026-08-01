@@ -22,6 +22,8 @@ A complete caller workflow is in [`examples/fixture-pr-scan.yml`](examples/fixtu
 
 Before the backend endpoint exists (SEC-13), add `upload: "false"` — the action builds and verifies the bundle without needing a server.
 
+**Runner prerequisites.** Checkov, Gitleaks, Trivy and OSV-Scanner are installed by the action. The Roslyn pass is not: it needs a .NET SDK matching the project's target framework already on the runner. `ubuntu-latest` ships .NET 8, which is what the fixture targets; anything else needs an `actions/setup-dotnet` step before this one. Without a usable `dotnet`, the code layer is skipped and the rest of the bundle is still produced.
+
 ## What it does
 
 ```

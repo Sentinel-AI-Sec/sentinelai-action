@@ -34,18 +34,26 @@ install_gitleaks() {
   if have gitleaks; then say "gitleaks already present"; return; fi
   say "installing gitleaks $GITLEAKS_VERSION"
   local url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-  curl -sSfL "$url" -o "$TOOLS_DIR/gitleaks.tar.gz" \
-    && tar -xzf "$TOOLS_DIR/gitleaks.tar.gz" -C "$TOOLS_DIR/bin" gitleaks \
-    || skip "gitleaks download"
+  if ! curl -sSfL "$url" -o "$TOOLS_DIR/gitleaks.tar.gz"; then
+    skip "gitleaks download"
+    return
+  fi
+  if ! tar -xzf "$TOOLS_DIR/gitleaks.tar.gz" -C "$TOOLS_DIR/bin" gitleaks; then
+    skip "gitleaks unpack"
+  fi
 }
 
 install_trivy() {
   if have trivy; then say "trivy already present"; return; fi
   say "installing trivy $TRIVY_VERSION"
   local url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-  curl -sSfL "$url" -o "$TOOLS_DIR/trivy.tar.gz" \
-    && tar -xzf "$TOOLS_DIR/trivy.tar.gz" -C "$TOOLS_DIR/bin" trivy \
-    || skip "trivy download"
+  if ! curl -sSfL "$url" -o "$TOOLS_DIR/trivy.tar.gz"; then
+    skip "trivy download"
+    return
+  fi
+  if ! tar -xzf "$TOOLS_DIR/trivy.tar.gz" -C "$TOOLS_DIR/bin" trivy; then
+    skip "trivy unpack"
+  fi
 }
 
 install_osv_scanner() {
