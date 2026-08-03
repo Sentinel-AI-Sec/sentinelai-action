@@ -85,11 +85,11 @@ inputs:
   trivy-version:
     description: "Pinned Trivy version."
     required: false
-    default: "0.55.0"
+    default: "0.72.0"
   osv-scanner-version:
     description: "Pinned OSV-Scanner version."
     required: false
-    default: "2.3.8"
+    default: "2.4.0"
   security-code-scan-version:
     description: "Pinned SecurityCodeScan.VS2019 analyzer version."
     required: false
