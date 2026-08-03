@@ -45,14 +45,12 @@ install_gitleaks() {
 
 install_trivy() {
   if have trivy; then say "trivy already present"; return; fi
-  say "installing trivy $TRIVY_VERSION"
-  local url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-  if ! curl -sSfL "$url" -o "$TOOLS_DIR/trivy.tar.gz"; then
-    skip "trivy download"
+  say "installing trivy $TRIVY_VERSION (via official install script)"
+  if ! curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+       | sh -s -- -b "$TOOLS_DIR/bin" "v${TRIVY_VERSION}"; then
+    warn "trivy install script failed for version v${TRIVY_VERSION} — check https://github.com/aquasecurity/trivy/releases/tag/v${TRIVY_VERSION}"
+    skip "trivy install"
     return
-  fi
-  if ! tar -xzf "$TOOLS_DIR/trivy.tar.gz" -C "$TOOLS_DIR/bin" trivy; then
-    skip "trivy unpack"
   fi
 }
 
