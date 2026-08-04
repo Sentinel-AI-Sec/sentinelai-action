@@ -52,6 +52,10 @@ inputs:
     description: "Install the pinned scanner toolchain. Set to 'false' when the runner image already has it."
     required: false
     default: "true"
+  install-terraform:
+    description: "Install Terraform on the runner. Set to 'false' when the runner image already has it."
+    required: false
+    default: "true"
 
   upload:
     description: "Upload the bundle to the backend. Set to 'false' to build the bundle only (dry run)."
@@ -94,6 +98,10 @@ inputs:
     description: "Pinned SecurityCodeScan.VS2019 analyzer version."
     required: false
     default: "5.6.7"
+  terraform-version:
+    description: "Pinned Terraform version, used to produce the terraform-graph.dot infra spine."
+    required: false
+    default: "1.9.5"
 
 outputs:
   bundle-path:
@@ -125,6 +133,13 @@ runs:
         TRIVY_VERSION: ${{ inputs.trivy-version }}
         OSV_SCANNER_VERSION: ${{ inputs.osv-scanner-version }}
       run: bash "$GITHUB_ACTION_PATH/scripts/install-scanners.sh"
+
+    - name: Install Terraform
+      if: inputs.install-terraform == 'true'
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
 
     - name: Secret pre-scan (Gitleaks)
       id: prescan
