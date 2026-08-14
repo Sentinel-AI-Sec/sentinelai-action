@@ -36,7 +36,8 @@ check_not() {
 found_any()   { [[ -n $(find "$1" -name "$2" -print -quit) ]]; }
 found_count() { [[ $(find "$2" -name "$3" | wc -l) -ge $1 ]]; }
 json_valid()  { python3 -m json.tool "$1"; }
-tarball_has() { tar -tzf "$1" | grep -q "$2"; }
+tarball_readable() { tar -tzf "$1" >/dev/null 2>&1; }
+tarball_has()      { tar -tzf "$1" | grep -q "$2"; }
 manifest_non_empty() {
   local n
   n=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['artifacts']))" "$1")
@@ -46,6 +47,13 @@ field_set() {
   python3 -c "import json,sys; assert json.load(open(sys.argv[1]))[sys.argv[2]]" "$1" "$2"
 }
 guard() { TARGET=$1 bash "$ROOT/scripts/assert-no-source.sh"; }
+
+# A function, not `env BUNDLE_DIR=... bash ...`. `check` invokes "$@", and an
+# assignment prefix is not applied through "$@" — bash looks for a command
+# literally named `BUNDLE_DIR=sentinelai-bundle` and fails. `env` was there to
+# make that work, which it does, at the price of letting any `env` earlier on
+# PATH decide whether the tarball is built at all. A function needs neither.
+package_bundle() { BUNDLE_DIR=sentinelai-bundle bash "$ROOT/scripts/package-bundle.sh"; }
 
 if [[ -z "$FIXTURE_DIR" || ! -d "$FIXTURE_DIR" ]]; then
   echo "FIXTURE_DIR must point at a checkout of Sentinel-AI-Sec/sentinelai-fixtures" >&2
@@ -116,8 +124,17 @@ rm -f "$GRAPH/Program.cs"
 
 echo
 echo "== packaging =="
-check "bundle packages"           env BUNDLE_DIR=sentinelai-bundle bash "$ROOT/scripts/package-bundle.sh"
+check "bundle packages"           package_bundle
 check "tarball exists"            test -f "$BUNDLE.tar.gz"
+
+# Positive controls first. `check_not ... tarball_has` alone was VACUOUS: tar
+# exits non-zero on an archive that does not exist, grep never runs, and
+# check_not reports a pass — so "no .cs inside the tarball" was at its most
+# confident exactly when there was no tarball. These two fail in that case, which
+# is what makes the negative below worth reading.
+check "tarball is readable"           tarball_readable "$BUNDLE.tar.gz"
+check "tarball lists metadata.json"   tarball_has "$BUNDLE.tar.gz" 'metadata\.json$'
+
 check_not "no .cs inside the tarball" tarball_has "$BUNDLE.tar.gz" '\.cs$'
 
 echo
