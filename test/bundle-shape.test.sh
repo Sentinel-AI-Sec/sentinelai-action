@@ -122,6 +122,18 @@ cp "$GITHUB_WORKSPACE/src/OrderApp/Program.cs" "$GRAPH/Program.cs"
 check_not "source guard REFUSES a planted .cs" guard sentinelai-bundle
 rm -f "$GRAPH/Program.cs"
 
+# .js specifically, because it was the extension the denylist forgot: ts, tsx and
+# jsx were all blocked and js was not, so a whole Node application walked through
+# a guard whose entire purpose is stopping exactly that. One planted file per
+# language family is cheap; one missing extension is the promise broken.
+printf 'module.exports = () => "application source";\n' >"$GRAPH/app.js"
+check_not "source guard REFUSES a planted .js" guard sentinelai-bundle
+rm -f "$GRAPH/app.js"
+
+printf 'SELECT * FROM customers;\n' >"$GRAPH/dump.sql"
+check_not "source guard REFUSES a planted .sql" guard sentinelai-bundle
+rm -f "$GRAPH/dump.sql"
+
 echo
 echo "== packaging =="
 check "bundle packages"           package_bundle

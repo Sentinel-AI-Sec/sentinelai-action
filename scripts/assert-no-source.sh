@@ -16,7 +16,22 @@ TARGET=$(workspace_path "${TARGET:?TARGET must be set}")
 
 # Application source in any language we might plausibly meet. .csproj and
 # packages.lock.json are manifests, not source, and stay allowed.
-BLOCKED_EXT='cs|vb|fs|cshtml|razor|aspx|java|kt|py|rb|php|go|rs|ts|tsx|jsx|c|cc|cpp|h|hpp|m|swift|scala'
+#
+# `js` was missing while `ts`, `tsx` and `jsx` were all present, so an entire
+# Node application passed this guard untouched — the one extension a JavaScript
+# project is guaranteed to have was the one not listed. `mjs`/`cjs` are the same
+# language under different module systems, and `sql`/`sh`/`ps1`/`bat` are added
+# because a stored procedure or a deploy script is exactly the kind of thing a
+# customer would be alarmed to find had left their runner, whatever a compiler
+# would call it.
+#
+# A denylist can only ever be as complete as the last person to think about it,
+# which is why it is the *backstop*: collect-graph-inputs.sh is an allowlist and
+# is what actually decides what gets copied. This catches the case where that
+# allowlist is changed carelessly.
+BLOCKED_EXT='cs|vb|fs|fsx|fsi|cshtml|razor|aspx|asax|ascx|java|kt|kts|py|pyw|pyi|rb|php|go|rs'
+BLOCKED_EXT="$BLOCKED_EXT"'|js|mjs|cjs|ts|tsx|jsx|c|cc|cpp|h|hpp|m|mm|swift|scala|groovy|clj'
+BLOCKED_EXT="$BLOCKED_EXT"'|sql|sh|bash|ps1|bat|cmd'
 
 listing=$(mktemp)
 trap 'rm -f "$listing" "$listing.hits"' EXIT
