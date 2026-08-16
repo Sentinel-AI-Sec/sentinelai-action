@@ -107,6 +107,15 @@ inputs:
     required: false
     default: "false"
 
+  comment-on-pr:
+    description: "Post a single comment on the pull request when the scan starts, then edit that same comment with the result. Set to 'false' to stay silent on the PR."
+    required: false
+    default: "true"
+  github-token:
+    description: "Token used to create and edit the PR comment. The calling workflow must grant 'pull-requests: write'."
+    required: false
+    default: ${{ github.token }}
+
   gitleaks-version:
     description: "Pinned Gitleaks version."
     required: false
@@ -240,6 +249,17 @@ runs:
         FAIL_ON_UPLOAD_ERROR: ${{ inputs.fail-on-upload-error }}
       run: bash "$GITHUB_ACTION_PATH/scripts/upload-bundle.sh"
 
+    # Immediately after the upload and before anything slow, so the PR shows a scan
+    # is running rather than nothing at all. The final step below edits this comment.
+    - name: Acknowledge the scan on the pull request
+      if: inputs.comment-on-pr == 'true' && steps.upload.outputs.upload-outcome == 'ok'
+      shell: bash
+      env:
+        COMMENT_MODE: "ack"
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/pr-comment.sh"
+
     # TEMPORARY (SEC-46). The backend has no queue-driven worker, so a submitted
     # scan stays Queued forever and the poll step below can only ever time out.
     # scripts/trigger-stages.sh explains why this lives here and what removes it.
@@ -278,3 +298,20 @@ runs:
         name: sentinelai-bundle
         path: ${{ steps.package.outputs.bundle-path }}
         retention-days: 7
+
+    # always(): this is the step that turns a failed upload, a dead scan or a timeout
+    # into a sentence on the pull request. It has to run precisely when an earlier
+    # step failed, which is the case a plain 'if' would skip. It edits the comment the
+    # ack step created rather than adding a second one.
+    - name: Report the result on the pull request
+      if: always() && inputs.comment-on-pr == 'true'
+      shell: bash
+      env:
+        COMMENT_MODE: "final"
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+        UPLOAD_OUTCOME: ${{ steps.upload.outputs.upload-outcome }}
+        SCAN_OUTCOME: ${{ steps.poll.outputs.scan-outcome }}
+        SCAN_STAGE: ${{ steps.poll.outputs.scan-stage }}
+        ERROR_MESSAGE: ${{ steps.poll.outputs.error-message || steps.trigger.outputs.error-message || steps.upload.outputs.error-message }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/pr-comment.sh"
