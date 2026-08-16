@@ -33,6 +33,7 @@ UPLOAD_OUTCOME=${UPLOAD_OUTCOME:-}
 SCAN_OUTCOME=${SCAN_OUTCOME:-}
 SCAN_STAGE=${SCAN_STAGE:-}
 ERROR_MESSAGE=${ERROR_MESSAGE:-}
+POLL_ENABLED=${POLL_ENABLED:-true}
 
 have jq || fail "jq is required to talk to the GitHub API — install it on this runner"
 
@@ -85,6 +86,8 @@ fi
 # SEC-41 owns this. When its formatter lands as scripts/format-report.sh it is
 # called here and its markdown is used verbatim; until then the placeholder below
 # makes the gap visible on the PR rather than silently showing nothing.
+# The backticks below are markdown code formatting, not command substitution.
+# shellcheck disable=SC2016
 render_findings() {
   local formatter
   formatter="$(dirname "${BASH_SOURCE[0]}")/format-report.sh"
@@ -96,6 +99,8 @@ render_findings() {
   printf 'The scan finished successfully; its results are on the backend under scan job `%s`._\n' "$SCAN_JOB_ID"
 }
 
+# As above: the backticks are markdown, not command substitution.
+# shellcheck disable=SC2016
 build_body() {
   printf '%s\n' "$MARKER"
 
@@ -126,9 +131,25 @@ build_body() {
           printf '%s\n\n' "${ERROR_MESSAGE:-The backend could not be reached.}"
           ;;
         *)
-          # No scan outcome at all means the run never got past the upload.
-          printf '### ⚠️ SentinelAI scan did not run\n\n'
-          printf '%s\n\n' "${ERROR_MESSAGE:-The bundle could not be uploaded to the backend.}"
+          # No scan outcome at all. Three different things can cause that, and saying
+          # the wrong one is worse than saying nothing — a successful upload reported
+          # as "the bundle could not be uploaded" would send someone after the wrong
+          # bug entirely.
+          if [[ "$UPLOAD_OUTCOME" != "ok" ]]; then
+            printf '### ⚠️ SentinelAI scan did not run\n\n'
+            printf '%s\n\n' "${ERROR_MESSAGE:-The bundle could not be uploaded to the backend.}"
+          elif [[ "$POLL_ENABLED" != "true" ]]; then
+            printf '### 🛡️ SentinelAI scan submitted\n\n'
+            printf 'The bundle was accepted. This workflow is not configured to wait for '
+            printf 'the result, so the scan is still running on the backend.\n\n'
+          else
+            printf '### ⚠️ SentinelAI could not determine the scan result\n\n'
+            printf 'The bundle was uploaded successfully, but the workflow stopped before '
+            printf 'it learned how the scan ended. The scan itself may still be running.\n\n'
+            if [[ -n "$ERROR_MESSAGE" ]]; then
+              printf '%s\n\n' "$ERROR_MESSAGE"
+            fi
+          fi
           ;;
       esac
       ;;

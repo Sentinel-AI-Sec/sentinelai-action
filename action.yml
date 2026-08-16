@@ -163,7 +163,7 @@ runs:
   steps:
     - name: Checkout code
       if: inputs.checkout == 'true'
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
     - name: Install scanners (pinned)
       if: inputs.install-scanners == 'true'
@@ -177,7 +177,7 @@ runs:
 
     - name: Install Terraform
       if: inputs.install-terraform == 'true'
-      uses: hashicorp/setup-terraform@v3
+      uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
       with:
         terraform_version: ${{ inputs.terraform-version }}
         terraform_wrapper: false
@@ -293,7 +293,7 @@ runs:
 
     - name: Attach bundle to workflow run
       if: inputs.upload-artifact == 'true'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: sentinelai-bundle
         path: ${{ steps.package.outputs.bundle-path }}
@@ -313,5 +313,6 @@ runs:
         UPLOAD_OUTCOME: ${{ steps.upload.outputs.upload-outcome }}
         SCAN_OUTCOME: ${{ steps.poll.outputs.scan-outcome }}
         SCAN_STAGE: ${{ steps.poll.outputs.scan-stage }}
+        POLL_ENABLED: ${{ inputs.poll }}
         ERROR_MESSAGE: ${{ steps.poll.outputs.error-message || steps.trigger.outputs.error-message || steps.upload.outputs.error-message }}
       run: bash "$GITHUB_ACTION_PATH/scripts/pr-comment.sh"
