@@ -65,6 +65,35 @@ inputs:
     description: "Fail the job when the upload does not return a 2xx response."
     required: false
     default: "true"
+  poll:
+    description: "Wait for the scan to finish after uploading. Set to 'false' to upload and return immediately."
+    required: false
+    default: "true"
+  poll-timeout:
+    description: "Hard wall-clock limit, in seconds, for the poll loop. Once reached the step fails with a timeout message rather than waiting longer."
+    required: false
+    default: "900"
+  poll-interval:
+    description: "Seconds to wait before the first status check. Doubles after every check, up to poll-max-interval."
+    required: false
+    default: "10"
+  poll-max-interval:
+    description: "Ceiling, in seconds, the poll backoff climbs to."
+    required: false
+    default: "60"
+
+  trigger-stages:
+    description: "TEMPORARY (SEC-46): after uploading, call the backend's /graph and /audit stage endpoints so the scan actually runs. The backend has no queue-driven worker yet, so without this a submitted scan stays queued and the poll step times out. Delete this input, and the two below, when SEC-46 lands."
+    required: false
+    default: "false"
+  trigger-graph-timeout:
+    description: "TEMPORARY (SEC-46): seconds to allow the /graph stage call. Parsing and graph traversal only, no model calls, so it returns quickly."
+    required: false
+    default: "300"
+  trigger-audit-timeout:
+    description: "TEMPORARY (SEC-46): seconds to allow the /audit stage call. This one runs the retrieval and the agent debate, so it blocks for minutes. Exceeding it is not an error — the scan is left running and the poll step waits for it."
+    required: false
+    default: "900"
   retain-report:
     description: "Opt in to report retention on the backend."
     required: false
@@ -77,6 +106,15 @@ inputs:
     description: "Also attach the bundle to the workflow run as an artifact, for debugging."
     required: false
     default: "false"
+
+  comment-on-pr:
+    description: "Post a single comment on the pull request when the scan starts, then edit that same comment with the result. Set to 'false' to stay silent on the PR."
+    required: false
+    default: "true"
+  github-token:
+    description: "Token used to create and edit the PR comment. The calling workflow must grant 'pull-requests: write'."
+    required: false
+    default: ${{ github.token }}
 
   gitleaks-version:
     description: "Pinned Gitleaks version."
@@ -116,13 +154,16 @@ outputs:
   poll-url:
     description: "Poll URL returned by the backend, empty on a dry run."
     value: ${{ steps.upload.outputs.poll-url }}
+  scan-outcome:
+    description: "How the scan ended: completed | failed | timeout | error. Empty when polling is disabled or the upload never succeeded."
+    value: ${{ steps.poll.outputs.scan-outcome }}
 
 runs:
   using: "composite"
   steps:
     - name: Checkout code
       if: inputs.checkout == 'true'
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
     - name: Install scanners (pinned)
       if: inputs.install-scanners == 'true'
@@ -136,7 +177,7 @@ runs:
 
     - name: Install Terraform
       if: inputs.install-terraform == 'true'
-      uses: hashicorp/setup-terraform@v3
+      uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
       with:
         terraform_version: ${{ inputs.terraform-version }}
         terraform_wrapper: false
@@ -208,10 +249,70 @@ runs:
         FAIL_ON_UPLOAD_ERROR: ${{ inputs.fail-on-upload-error }}
       run: bash "$GITHUB_ACTION_PATH/scripts/upload-bundle.sh"
 
+    # Immediately after the upload and before anything slow, so the PR shows a scan
+    # is running rather than nothing at all. The final step below edits this comment.
+    - name: Acknowledge the scan on the pull request
+      if: inputs.comment-on-pr == 'true' && steps.upload.outputs.upload-outcome == 'ok'
+      shell: bash
+      env:
+        COMMENT_MODE: "ack"
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/pr-comment.sh"
+
+    # TEMPORARY (SEC-46). The backend has no queue-driven worker, so a submitted
+    # scan stays Queued forever and the poll step below can only ever time out.
+    # scripts/trigger-stages.sh explains why this lives here and what removes it.
+    - name: Run the backend pipeline stages (SEC-46 stopgap)
+      id: trigger
+      if: inputs.upload == 'true' && inputs.trigger-stages == 'true' && steps.upload.outputs.upload-outcome == 'ok'
+      shell: bash
+      env:
+        BACKEND_URL: ${{ inputs.backend-url }}
+        MACHINE_TOKEN: ${{ inputs.machine-token }}
+        AUTH_SCHEME: ${{ inputs.auth-scheme }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+        TRIGGER_GRAPH_MAX_TIME: ${{ inputs.trigger-graph-timeout }}
+        TRIGGER_AUDIT_MAX_TIME: ${{ inputs.trigger-audit-timeout }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/trigger-stages.sh"
+
+    - name: Wait for the scan to finish
+      id: poll
+      if: inputs.upload == 'true' && inputs.poll == 'true' && steps.upload.outputs.upload-outcome == 'ok'
+      shell: bash
+      env:
+        BACKEND_URL: ${{ inputs.backend-url }}
+        MACHINE_TOKEN: ${{ inputs.machine-token }}
+        AUTH_SCHEME: ${{ inputs.auth-scheme }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+        POLL_URL: ${{ steps.upload.outputs.poll-url }}
+        POLL_TIMEOUT: ${{ inputs.poll-timeout }}
+        POLL_INTERVAL: ${{ inputs.poll-interval }}
+        POLL_MAX_INTERVAL: ${{ inputs.poll-max-interval }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/poll-scan.sh"
+
     - name: Attach bundle to workflow run
       if: inputs.upload-artifact == 'true'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: sentinelai-bundle
         path: ${{ steps.package.outputs.bundle-path }}
         retention-days: 7
+
+    # always(): this is the step that turns a failed upload, a dead scan or a timeout
+    # into a sentence on the pull request. It has to run precisely when an earlier
+    # step failed, which is the case a plain 'if' would skip. It edits the comment the
+    # ack step created rather than adding a second one.
+    - name: Report the result on the pull request
+      if: always() && inputs.comment-on-pr == 'true'
+      shell: bash
+      env:
+        COMMENT_MODE: "final"
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+        UPLOAD_OUTCOME: ${{ steps.upload.outputs.upload-outcome }}
+        SCAN_OUTCOME: ${{ steps.poll.outputs.scan-outcome }}
+        SCAN_STAGE: ${{ steps.poll.outputs.scan-stage }}
+        POLL_ENABLED: ${{ inputs.poll }}
+        ERROR_MESSAGE: ${{ steps.poll.outputs.error-message || steps.trigger.outputs.error-message || steps.upload.outputs.error-message }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/pr-comment.sh"
