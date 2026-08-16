@@ -65,6 +65,22 @@ inputs:
     description: "Fail the job when the upload does not return a 2xx response."
     required: false
     default: "true"
+  poll:
+    description: "Wait for the scan to finish after uploading. Set to 'false' to upload and return immediately."
+    required: false
+    default: "true"
+  poll-timeout:
+    description: "Hard wall-clock limit, in seconds, for the poll loop. Once reached the step fails with a timeout message rather than waiting longer."
+    required: false
+    default: "900"
+  poll-interval:
+    description: "Seconds to wait before the first status check. Doubles after every check, up to poll-max-interval."
+    required: false
+    default: "10"
+  poll-max-interval:
+    description: "Ceiling, in seconds, the poll backoff climbs to."
+    required: false
+    default: "60"
   retain-report:
     description: "Opt in to report retention on the backend."
     required: false
@@ -116,6 +132,9 @@ outputs:
   poll-url:
     description: "Poll URL returned by the backend, empty on a dry run."
     value: ${{ steps.upload.outputs.poll-url }}
+  scan-outcome:
+    description: "How the scan ended: completed | failed | timeout | error. Empty when polling is disabled or the upload never succeeded."
+    value: ${{ steps.poll.outputs.scan-outcome }}
 
 runs:
   using: "composite"
@@ -207,6 +226,21 @@ runs:
         BUNDLE_PATH: ${{ steps.package.outputs.bundle-path }}
         FAIL_ON_UPLOAD_ERROR: ${{ inputs.fail-on-upload-error }}
       run: bash "$GITHUB_ACTION_PATH/scripts/upload-bundle.sh"
+
+    - name: Wait for the scan to finish
+      id: poll
+      if: inputs.upload == 'true' && inputs.poll == 'true' && steps.upload.outputs.upload-outcome == 'ok'
+      shell: bash
+      env:
+        BACKEND_URL: ${{ inputs.backend-url }}
+        MACHINE_TOKEN: ${{ inputs.machine-token }}
+        AUTH_SCHEME: ${{ inputs.auth-scheme }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+        POLL_URL: ${{ steps.upload.outputs.poll-url }}
+        POLL_TIMEOUT: ${{ inputs.poll-timeout }}
+        POLL_INTERVAL: ${{ inputs.poll-interval }}
+        POLL_MAX_INTERVAL: ${{ inputs.poll-max-interval }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/poll-scan.sh"
 
     - name: Attach bundle to workflow run
       if: inputs.upload-artifact == 'true'
