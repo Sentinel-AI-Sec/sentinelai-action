@@ -81,6 +81,19 @@ inputs:
     description: "Ceiling, in seconds, the poll backoff climbs to."
     required: false
     default: "60"
+
+  trigger-stages:
+    description: "TEMPORARY (SEC-46): after uploading, call the backend's /graph and /audit stage endpoints so the scan actually runs. The backend has no queue-driven worker yet, so without this a submitted scan stays queued and the poll step times out. Delete this input, and the two below, when SEC-46 lands."
+    required: false
+    default: "false"
+  trigger-graph-timeout:
+    description: "TEMPORARY (SEC-46): seconds to allow the /graph stage call. Parsing and graph traversal only, no model calls, so it returns quickly."
+    required: false
+    default: "300"
+  trigger-audit-timeout:
+    description: "TEMPORARY (SEC-46): seconds to allow the /audit stage call. This one runs the retrieval and the agent debate, so it blocks for minutes. Exceeding it is not an error — the scan is left running and the poll step waits for it."
+    required: false
+    default: "900"
   retain-report:
     description: "Opt in to report retention on the backend."
     required: false
@@ -226,6 +239,22 @@ runs:
         BUNDLE_PATH: ${{ steps.package.outputs.bundle-path }}
         FAIL_ON_UPLOAD_ERROR: ${{ inputs.fail-on-upload-error }}
       run: bash "$GITHUB_ACTION_PATH/scripts/upload-bundle.sh"
+
+    # TEMPORARY (SEC-46). The backend has no queue-driven worker, so a submitted
+    # scan stays Queued forever and the poll step below can only ever time out.
+    # scripts/trigger-stages.sh explains why this lives here and what removes it.
+    - name: Run the backend pipeline stages (SEC-46 stopgap)
+      id: trigger
+      if: inputs.upload == 'true' && inputs.trigger-stages == 'true' && steps.upload.outputs.upload-outcome == 'ok'
+      shell: bash
+      env:
+        BACKEND_URL: ${{ inputs.backend-url }}
+        MACHINE_TOKEN: ${{ inputs.machine-token }}
+        AUTH_SCHEME: ${{ inputs.auth-scheme }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+        TRIGGER_GRAPH_MAX_TIME: ${{ inputs.trigger-graph-timeout }}
+        TRIGGER_AUDIT_MAX_TIME: ${{ inputs.trigger-audit-timeout }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/trigger-stages.sh"
 
     - name: Wait for the scan to finish
       id: poll
