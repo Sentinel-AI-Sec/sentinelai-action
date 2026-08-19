@@ -34,6 +34,15 @@ inputs:
     description: "Directory holding the Terraform configuration, relative to scan-dir."
     required: false
     default: "infra"
+  exclude-dirs:
+    description: >-
+      Comma-separated directories to leave out of the scan and the graph inputs,
+      relative to scan-dir. For repositories that carry trees which are not the
+      software under test - vendored benchmark corpora, sample apps. Beyond the
+      noise, an npm package-lock.json swept up from one of them reaches the
+      backend NuGet lockfile parser and fails the graph stage outright.
+    required: false
+    default: ""
   bundle-dir:
     description: "Directory the bundle is assembled in, relative to the workspace."
     required: false
@@ -187,6 +196,7 @@ runs:
       shell: bash
       env:
         SCAN_DIR: ${{ inputs.scan-dir }}
+        EXCLUDE_DIRS: ${{ inputs.exclude-dirs }}
         BUNDLE_DIR: ${{ inputs.bundle-dir }}
       run: bash "$GITHUB_ACTION_PATH/scripts/secret-prescan.sh"
 
@@ -194,6 +204,7 @@ runs:
       shell: bash
       env:
         SCAN_DIR: ${{ inputs.scan-dir }}
+        EXCLUDE_DIRS: ${{ inputs.exclude-dirs }}
         INFRA_DIR: ${{ inputs.infra-dir }}
         BUNDLE_DIR: ${{ inputs.bundle-dir }}
         DOTNET_PROJECT: ${{ inputs.dotnet-project }}
@@ -209,6 +220,7 @@ runs:
       shell: bash
       env:
         SCAN_DIR: ${{ inputs.scan-dir }}
+        EXCLUDE_DIRS: ${{ inputs.exclude-dirs }}
         INFRA_DIR: ${{ inputs.infra-dir }}
         BUNDLE_DIR: ${{ inputs.bundle-dir }}
       run: bash "$GITHUB_ACTION_PATH/scripts/collect-graph-inputs.sh"

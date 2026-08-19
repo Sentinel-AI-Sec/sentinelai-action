@@ -97,7 +97,15 @@ run_osv() {
 run_trivy() {
   if ! have trivy; then skip trivy; missing+=(trivy); return; fi
   say "trivy: fs scan of $SCAN_DIR (misconfig + vuln)"
-  trivy fs --scanners misconfig,vuln --format sarif -o "$FINDINGS/trivy.sarif" \
+  # Same EXCLUDE_DIRS the graph collector honours, so the two halves of the
+  # bundle describe the same tree rather than disagreeing about its edges.
+  local skip=()
+  IFS="," read -ra _ex <<< "${EXCLUDE_DIRS:-}"
+  for _d in "${_ex[@]}"; do
+    _d="${_d#/}"; _d="${_d%/}"; _d="${_d# }"; _d="${_d% }"
+    [[ -n "$_d" ]] && skip+=( --skip-dirs "$_d" )
+  done
+  trivy fs "${skip[@]}" --scanners misconfig,vuln --format sarif -o "$FINDINGS/trivy.sarif" \
     --exit-code 0 "$SCAN_DIR" || true
   if [[ -s "$FINDINGS/trivy.sarif" ]]; then ran+=(trivy); else rm -f "$FINDINGS/trivy.sarif"; missing+=(trivy); fi
 }

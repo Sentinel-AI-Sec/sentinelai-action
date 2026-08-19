@@ -58,10 +58,28 @@ copy_matches() {
     copied=$((copied + 1))
     say "collected $rel"
   done < <(find "$SCAN_DIR" \
-             \( -path '*/.git' -o -path '*/node_modules' -o -path '*/.terraform' \
-                -o -path "$BUNDLE_DIR" -o -path '*/bin' -o -path '*/obj' \) -prune -o \
+             \( "${PRUNE_ARGS[@]}" \) -prune -o \
              -type f -name "$pattern" -print0)
 }
+
+# Directories never worth walking, plus whatever the caller excluded.
+#
+# EXCLUDE_DIRS exists because a repository can legitimately hold trees that are
+# not the software being scanned - vendored benchmark corpora, sample apps,
+# vulnerable-by-design fixtures. Collecting those is not merely noisy: an npm
+# package-lock.json swept up from one of them reaches NuGetLockFileParser on the
+# backend and fails the whole graph stage, because the two lockfile formats share
+# almost a filename and nothing else.
+PRUNE_ARGS=( -path "*/.git" -o -path "*/node_modules" -o -path "*/.terraform"
+             -o -path "$BUNDLE_DIR" -o -path "*/bin" -o -path "*/obj" )
+
+IFS="," read -ra _excludes <<< "${EXCLUDE_DIRS:-}"
+for _d in "${_excludes[@]}"; do
+  _d="${_d#/}"; _d="${_d%/}"; _d="${_d# }"; _d="${_d% }"
+  [[ -n "$_d" ]] || continue
+  PRUNE_ARGS+=( -o -path "$SCAN_DIR/$_d" -o -path "*/$_d" )
+  say "excluding $_d from graph inputs"
+done
 
 copy_matches '*.tf'
 copy_matches '*.tf.json'
