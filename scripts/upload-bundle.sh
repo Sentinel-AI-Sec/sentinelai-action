@@ -49,10 +49,22 @@ trap 'rm -f "$hdr"' EXIT
 printf 'Authorization: %s %s\n' "$AUTH_SCHEME" "$MACHINE_TOKEN" >"$hdr"
 chmod 600 "$hdr"
 
+# "metadata=<file" and "metadata=@file" are not interchangeable, and the
+# difference is the whole reason an upload can 400 with "The Metadata field is
+# required" while the bundle itself is perfectly well formed:
+#
+#   @file  sends a FILE part - Content-Disposition carries a filename, so ASP.NET
+#          binds it to IFormFile and leaves a `string Metadata` unset
+#   <file  sends the file CONTENTS as an ordinary form VALUE - no filename, so it
+#          binds to `string Metadata`, which is what SubmitScanRequest declares
+#
+# The bundle stays @ because it genuinely is a file. No ;type= on metadata: a part
+# carrying a Content-Type but no filename is the ambiguous case, and there is
+# nothing to gain by standing near it.
 code=$(curl -sS -X POST "$endpoint" \
   -H @"$hdr" \
   -H "Accept: application/json" \
-  -F "metadata=@$BUNDLE_DIR/metadata.json;type=application/json" \
+  -F "metadata=<$BUNDLE_DIR/metadata.json" \
   -F "bundle=@$BUNDLE_PATH;type=application/gzip" \
   --max-time "$UPLOAD_MAX_TIME" \
   --retry 3 --retry-delay 5 --retry-connrefused \
