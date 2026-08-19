@@ -320,6 +320,12 @@ runs:
       shell: bash
       env:
         COMMENT_MODE: "final"
+        # format-report.sh (SEC-41) reads the audit back to render it here, so this
+        # step needs the same backend credentials the upload used. Absent them the
+        # formatter exits non-zero and pr-comment.sh keeps its placeholder.
+        BACKEND_URL: ${{ inputs.backend-url }}
+        MACHINE_TOKEN: ${{ inputs.machine-token }}
+        AUTH_SCHEME: ${{ inputs.auth-scheme }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
         UPLOAD_OUTCOME: ${{ steps.upload.outputs.upload-outcome }}
