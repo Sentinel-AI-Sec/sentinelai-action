@@ -1,0 +1,336 @@
+name: "SentinelAI Scan"
+description: "Runs the scanners on the runner and uploads a findings + graph-inputs bundle to the SentinelAI backend."
+author: "Sentinel-AI-Sec"
+
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  backend-url:
+    description: "SentinelAI backend base URL, e.g. https://api.sentinelai.example"
+    required: true
+  machine-token:
+    description: "Scoped machine token (scan:write) used to authenticate with the backend."
+    required: true
+  project-id:
+    description: "SentinelAI project id this repository is registered as. Recorded in the bundle metadata."
+    required: false
+    default: ""
+  auth-scheme:
+    description: "Authorization scheme for the machine token. 'Bearer' per the API design; 'ApiKey' if the backend expects that instead."
+    required: false
+    default: "Bearer"
+
+  checkout:
+    description: "Check the repository out. Set to 'false' when the calling workflow already ran actions/checkout."
+    required: false
+    default: "true"
+  scan-dir:
+    description: "Directory to scan, relative to the workspace."
+    required: false
+    default: "."
+  infra-dir:
+    description: "Directory holding the Terraform configuration, relative to scan-dir."
+    required: false
+    default: "infra"
+  exclude-dirs:
+    description: >-
+      Comma-separated directories to leave out of the scan and the graph inputs,
+      relative to scan-dir. For repositories that carry trees which are not the
+      software under test - vendored benchmark corpora, sample apps. Beyond the
+      noise, an npm package-lock.json swept up from one of them reaches the
+      backend NuGet lockfile parser and fails the graph stage outright.
+    required: false
+    default: ""
+  bundle-dir:
+    description: "Directory the bundle is assembled in, relative to the workspace."
+    required: false
+    default: "sentinelai-bundle"
+
+  dotnet-project:
+    description: "Path to the .csproj to build for the Roslyn/Security Code Scan pass, e.g. src/OrderApp/OrderApp.csproj. Empty skips the code layer."
+    required: false
+    default: ""
+  lockfile-path:
+    description: "Path to packages.lock.json for OSV-Scanner. Empty auto-discovers the one the .NET restore produced."
+    required: false
+    default: ""
+
+  install-scanners:
+    description: "Install the pinned scanner toolchain. Set to 'false' when the runner image already has it."
+    required: false
+    default: "true"
+  install-terraform:
+    description: "Install Terraform on the runner. Set to 'false' when the runner image already has it."
+    required: false
+    default: "true"
+
+  upload:
+    description: "Upload the bundle to the backend. Set to 'false' to build the bundle only (dry run)."
+    required: false
+    default: "true"
+  fail-on-upload-error:
+    description: "Fail the job when the upload does not return a 2xx response."
+    required: false
+    default: "true"
+  poll:
+    description: "Wait for the scan to finish after uploading. Set to 'false' to upload and return immediately."
+    required: false
+    default: "true"
+  poll-timeout:
+    description: "Hard wall-clock limit, in seconds, for the poll loop. Once reached the step fails with a timeout message rather than waiting longer."
+    required: false
+    default: "900"
+  poll-interval:
+    description: "Seconds to wait before the first status check. Doubles after every check, up to poll-max-interval."
+    required: false
+    default: "10"
+  poll-max-interval:
+    description: "Ceiling, in seconds, the poll backoff climbs to."
+    required: false
+    default: "60"
+
+  trigger-stages:
+    description: "TEMPORARY (SEC-46): after uploading, call the backend's /graph and /audit stage endpoints so the scan actually runs. The backend has no queue-driven worker yet, so without this a submitted scan stays queued and the poll step times out. Delete this input, and the two below, when SEC-46 lands."
+    required: false
+    default: "false"
+  trigger-graph-timeout:
+    description: "TEMPORARY (SEC-46): seconds to allow the /graph stage call. Parsing and graph traversal only, no model calls, so it returns quickly."
+    required: false
+    default: "300"
+  trigger-audit-timeout:
+    description: "TEMPORARY (SEC-46): seconds to allow the /audit stage call. This one runs the retrieval and the agent debate, so it blocks for minutes. Exceeding it is not an error — the scan is left running and the poll step waits for it."
+    required: false
+    default: "900"
+  retain-report:
+    description: "Opt in to report retention on the backend."
+    required: false
+    default: "false"
+  model-tier-hint:
+    description: "Model tier hint passed to the backend: auto | economy | premium."
+    required: false
+    default: "auto"
+  upload-artifact:
+    description: "Also attach the bundle to the workflow run as an artifact, for debugging."
+    required: false
+    default: "false"
+
+  comment-on-pr:
+    description: "Post a single comment on the pull request when the scan starts, then edit that same comment with the result. Set to 'false' to stay silent on the PR."
+    required: false
+    default: "true"
+  github-token:
+    description: "Token used to create and edit the PR comment. The calling workflow must grant 'pull-requests: write'."
+    required: false
+    default: ${{ github.token }}
+
+  gitleaks-version:
+    description: "Pinned Gitleaks version."
+    required: false
+    default: "8.18.4"
+  checkov-version:
+    description: "Pinned Checkov version."
+    required: false
+    default: "3.2.0"
+  trivy-version:
+    description: "Pinned Trivy version."
+    required: false
+    default: "0.72.0"
+  osv-scanner-version:
+    description: "Pinned OSV-Scanner version."
+    required: false
+    default: "2.4.0"
+  security-code-scan-version:
+    description: "Pinned SecurityCodeScan.VS2019 analyzer version."
+    required: false
+    default: "5.6.7"
+  terraform-version:
+    description: "Pinned Terraform version, used to produce the terraform-graph.dot infra spine."
+    required: false
+    default: "1.9.5"
+
+outputs:
+  bundle-path:
+    description: "Path to the packaged bundle tarball."
+    value: ${{ steps.package.outputs.bundle-path }}
+  bundle-sha256:
+    description: "SHA-256 of the packaged bundle tarball."
+    value: ${{ steps.package.outputs.bundle-sha256 }}
+  scan-job-id:
+    description: "Scan job id returned by the backend, empty on a dry run."
+    value: ${{ steps.upload.outputs.scan-job-id }}
+  poll-url:
+    description: "Poll URL returned by the backend, empty on a dry run."
+    value: ${{ steps.upload.outputs.poll-url }}
+  scan-outcome:
+    description: "How the scan ended: completed | failed | timeout | error. Empty when polling is disabled or the upload never succeeded."
+    value: ${{ steps.poll.outputs.scan-outcome }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout code
+      if: inputs.checkout == 'true'
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+    - name: Install scanners (pinned)
+      if: inputs.install-scanners == 'true'
+      shell: bash
+      env:
+        GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+        CHECKOV_VERSION: ${{ inputs.checkov-version }}
+        TRIVY_VERSION: ${{ inputs.trivy-version }}
+        OSV_SCANNER_VERSION: ${{ inputs.osv-scanner-version }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/install-scanners.sh"
+
+    - name: Install Terraform
+      if: inputs.install-terraform == 'true'
+      uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    - name: Secret pre-scan (Gitleaks)
+      id: prescan
+      shell: bash
+      env:
+        SCAN_DIR: ${{ inputs.scan-dir }}
+        EXCLUDE_DIRS: ${{ inputs.exclude-dirs }}
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/secret-prescan.sh"
+
+    - name: Run scanners
+      shell: bash
+      env:
+        SCAN_DIR: ${{ inputs.scan-dir }}
+        EXCLUDE_DIRS: ${{ inputs.exclude-dirs }}
+        INFRA_DIR: ${{ inputs.infra-dir }}
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+        DOTNET_PROJECT: ${{ inputs.dotnet-project }}
+        LOCKFILE_PATH: ${{ inputs.lockfile-path }}
+        SCS_VERSION: ${{ inputs.security-code-scan-version }}
+        CHECKOV_VERSION: ${{ inputs.checkov-version }}
+        TRIVY_VERSION: ${{ inputs.trivy-version }}
+        OSV_SCANNER_VERSION: ${{ inputs.osv-scanner-version }}
+        GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/run-scanners.sh"
+
+    - name: Collect graph inputs
+      shell: bash
+      env:
+        SCAN_DIR: ${{ inputs.scan-dir }}
+        EXCLUDE_DIRS: ${{ inputs.exclude-dirs }}
+        INFRA_DIR: ${{ inputs.infra-dir }}
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/collect-graph-inputs.sh"
+
+    - name: Build bundle metadata
+      shell: bash
+      env:
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+        PROJECT_ID: ${{ inputs.project-id }}
+        MODEL_TIER_HINT: ${{ inputs.model-tier-hint }}
+        RETAIN_REPORT: ${{ inputs.retain-report }}
+        RUNNER_SECRET_SCAN: ${{ steps.prescan.outputs.status }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/build-metadata.sh"
+
+    - name: Assert no application source in bundle
+      shell: bash
+      env:
+        TARGET: ${{ inputs.bundle-dir }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/assert-no-source.sh"
+
+    - name: Package bundle
+      id: package
+      shell: bash
+      env:
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/package-bundle.sh"
+
+    - name: Upload bundle to SentinelAI
+      id: upload
+      if: inputs.upload == 'true'
+      shell: bash
+      env:
+        BACKEND_URL: ${{ inputs.backend-url }}
+        MACHINE_TOKEN: ${{ inputs.machine-token }}
+        AUTH_SCHEME: ${{ inputs.auth-scheme }}
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+        BUNDLE_PATH: ${{ steps.package.outputs.bundle-path }}
+        FAIL_ON_UPLOAD_ERROR: ${{ inputs.fail-on-upload-error }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/upload-bundle.sh"
+
+    # Immediately after the upload and before anything slow, so the PR shows a scan
+    # is running rather than nothing at all. The final step below edits this comment.
+    - name: Acknowledge the scan on the pull request
+      if: inputs.comment-on-pr == 'true' && steps.upload.outputs.upload-outcome == 'ok'
+      shell: bash
+      env:
+        COMMENT_MODE: "ack"
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/pr-comment.sh"
+
+    # TEMPORARY (SEC-46). The backend has no queue-driven worker, so a submitted
+    # scan stays Queued forever and the poll step below can only ever time out.
+    # scripts/trigger-stages.sh explains why this lives here and what removes it.
+    - name: Run the backend pipeline stages (SEC-46 stopgap)
+      id: trigger
+      if: inputs.upload == 'true' && inputs.trigger-stages == 'true' && steps.upload.outputs.upload-outcome == 'ok'
+      shell: bash
+      env:
+        BACKEND_URL: ${{ inputs.backend-url }}
+        MACHINE_TOKEN: ${{ inputs.machine-token }}
+        AUTH_SCHEME: ${{ inputs.auth-scheme }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+        TRIGGER_GRAPH_MAX_TIME: ${{ inputs.trigger-graph-timeout }}
+        TRIGGER_AUDIT_MAX_TIME: ${{ inputs.trigger-audit-timeout }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/trigger-stages.sh"
+
+    - name: Wait for the scan to finish
+      id: poll
+      if: inputs.upload == 'true' && inputs.poll == 'true' && steps.upload.outputs.upload-outcome == 'ok'
+      shell: bash
+      env:
+        BACKEND_URL: ${{ inputs.backend-url }}
+        MACHINE_TOKEN: ${{ inputs.machine-token }}
+        AUTH_SCHEME: ${{ inputs.auth-scheme }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+        POLL_URL: ${{ steps.upload.outputs.poll-url }}
+        POLL_TIMEOUT: ${{ inputs.poll-timeout }}
+        POLL_INTERVAL: ${{ inputs.poll-interval }}
+        POLL_MAX_INTERVAL: ${{ inputs.poll-max-interval }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/poll-scan.sh"
+
+    - name: Attach bundle to workflow run
+      if: inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: sentinelai-bundle
+        path: ${{ steps.package.outputs.bundle-path }}
+        retention-days: 7
+
+    # always(): this is the step that turns a failed upload, a dead scan or a timeout
+    # into a sentence on the pull request. It has to run precisely when an earlier
+    # step failed, which is the case a plain 'if' would skip. It edits the comment the
+    # ack step created rather than adding a second one.
+    - name: Report the result on the pull request
+      if: always() && inputs.comment-on-pr == 'true'
+      shell: bash
+      env:
+        COMMENT_MODE: "final"
+        # format-report.sh (SEC-41) reads the audit back to render it here, so this
+        # step needs the same backend credentials the upload used. Absent them the
+        # formatter exits non-zero and pr-comment.sh keeps its placeholder.
+        BACKEND_URL: ${{ inputs.backend-url }}
+        MACHINE_TOKEN: ${{ inputs.machine-token }}
+        AUTH_SCHEME: ${{ inputs.auth-scheme }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SCAN_JOB_ID: ${{ steps.upload.outputs.scan-job-id }}
+        UPLOAD_OUTCOME: ${{ steps.upload.outputs.upload-outcome }}
+        SCAN_OUTCOME: ${{ steps.poll.outputs.scan-outcome }}
+        SCAN_STAGE: ${{ steps.poll.outputs.scan-stage }}
+        POLL_ENABLED: ${{ inputs.poll }}
+        ERROR_MESSAGE: ${{ steps.poll.outputs.error-message || steps.trigger.outputs.error-message || steps.upload.outputs.error-message }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/pr-comment.sh"

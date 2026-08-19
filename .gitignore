@@ -1,0 +1,6 @@
+# JetBrains IDE settings — local to a developer's machine.
+.idea/
+
+# Bundle output produced by a local action run.
+sentinelai-bundle/
+sentinelai-bundle.tar.gz
